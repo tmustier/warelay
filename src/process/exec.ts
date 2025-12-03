@@ -58,12 +58,15 @@ export async function runCommandWithTimeout(
       : optionsOrTimeout;
   const { timeoutMs, cwd } = options;
 
-  // Spawn with inherited stdin (TTY) so tools like `claude` don't hang.
+  // Spawn with piped stdin. Using "inherit" can hang when there's no TTY.
+  // Close stdin immediately so child processes don't wait for EOF.
   return await new Promise((resolve, reject) => {
     const child = spawn(argv[0], argv.slice(1), {
-      stdio: ["inherit", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
       cwd,
     });
+    // Close stdin immediately - Claude CLI waits for EOF before processing
+    child.stdin?.end();
     let stdout = "";
     let stderr = "";
     let settled = false;
