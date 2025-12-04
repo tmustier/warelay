@@ -15,7 +15,8 @@ import { logInfo } from "../logger.js";
 import { getChildLogger } from "../logging.js";
 import { getQueueSize } from "../process/command-queue.js";
 import { defaultRuntime, type RuntimeEnv } from "../runtime.js";
-import { jidToE164, normalizeE164 } from "../utils.js";
+import { jidToE164, normalizeE164, sleep } from "../utils.js";
+import type { ChunkingConfig } from "../config/config.js";
 import { monitorWebInbox } from "./inbound.js";
 import { sendViaIpc, startIpcServer, stopIpcServer } from "./ipc.js";
 import { loadWebMedia } from "./media.js";
@@ -84,13 +85,15 @@ function buildMentionConfig(cfg: ReturnType<typeof loadConfig>): MentionConfig {
   const gc = cfg.inbound?.groupChat;
   const requireMention = gc?.requireMention !== false; // default true
   const mentionRegexes =
-    gc?.mentionPatterns?.map((p) => {
-      try {
-        return new RegExp(p, "i");
-      } catch {
-        return null;
-      }
-    }).filter((r): r is RegExp => Boolean(r)) ?? [];
+    gc?.mentionPatterns
+      ?.map((p) => {
+        try {
+          return new RegExp(p, "i");
+        } catch {
+          return null;
+        }
+      })
+      .filter((r): r is RegExp => Boolean(r)) ?? [];
   return { requireMention, mentionRegexes };
 }
 
@@ -444,6 +447,7 @@ async function deliverWebReply(params: {
   runtime: RuntimeEnv;
   connectionId?: string;
   skipLog?: boolean;
+  chunking?: ChunkingConfig;
 }) {
   const {
     replyResult,
@@ -453,6 +457,7 @@ async function deliverWebReply(params: {
     runtime,
     connectionId,
     skipLog,
+    chunking,
   } = params;
   const replyStarted = Date.now();
   const textChunks = chunkText(replyResult.text || "", WEB_TEXT_LIMIT);
@@ -463,7 +468,68 @@ async function deliverWebReply(params: {
       : [];
 
   // Text-only replies
-  if (mediaList.length === 0 && textChunks.length) {
+  if (mediaList.length === 0 && replyResult.text) {
+    // Check if delimiter-based chunking is enabled
+    const chunkingEnabled = chunking?.enabled === true;
+    const delimiter = chunking?.delimiter ?? "---";
+
+    // Split on delimiter if chunking enabled and delimiter is present
+    if (chunkingEnabled && replyResult.text.includes(delimiter)) {
+      const delimiterChunks = replyResult.text
+        .split(delimiter)
+        .map((c) => c.trim())
+        .filter((c) => c.length > 0);
+
+      logVerbose(
+        `Delimiter chunking: splitting into ${delimiterChunks.length} chunks on "${delimiter}"`,
+      );
+
+      for (let i = 0; i < delimiterChunks.length; i++) {
+        if (i > 0) {
+          // Show typing indicator and wait before next chunk
+          // Delay scales with chunk length: base 500ms + ~20ms per char, capped at 3s
+          const chunkDelay = Math.min(
+            500 + delimiterChunks[i].length * 20,
+            3000,
+          );
+          await msg.sendComposing();
+          await sleep(chunkDelay);
+        }
+        // Apply character-limit chunking to each delimiter chunk (for overflow protection)
+        const subChunks = chunkText(delimiterChunks[i], WEB_TEXT_LIMIT);
+        for (const subChunk of subChunks) {
+          await msg.reply(subChunk);
+        }
+        logVerbose(
+          `Sent chunk ${i + 1}/${delimiterChunks.length} (${delimiterChunks[i].length} chars)`,
+        );
+      }
+
+      if (!skipLog) {
+        logInfo(
+          `✅ Sent ${delimiterChunks.length} chunked replies to ${msg.from} (${(Date.now() - replyStarted).toFixed(0)}ms)`,
+          runtime,
+        );
+      }
+      replyLogger.info(
+        {
+          correlationId: msg.id ?? newConnectionId(),
+          connectionId: connectionId ?? null,
+          to: msg.from,
+          from: msg.to,
+          text: replyResult.text,
+          chunks: delimiterChunks.length,
+          mediaUrl: null,
+          mediaSizeBytes: null,
+          mediaKind: null,
+          durationMs: Date.now() - replyStarted,
+        },
+        "auto-reply sent (delimiter chunked text)",
+      );
+      return;
+    }
+
+    // No delimiter chunking - use character-limit chunking for overflow protection
     for (const chunk of textChunks) {
       await msg.reply(chunk);
     }
@@ -728,7 +794,7 @@ export async function monitorWebProvider(
         const senderLabel =
           latest.senderName && latest.senderE164
             ? `${latest.senderName} (${latest.senderE164})`
-            : latest.senderName ?? latest.senderE164 ?? "Unknown";
+            : (latest.senderName ?? latest.senderE164 ?? "Unknown");
         combinedBody = `${combinedBody}\\n[from: ${senderLabel}]`;
         // Clear stored history after using it
         groupHistories.set(conversationId, []);
@@ -817,6 +883,7 @@ export async function monitorWebProvider(
             replyLogger,
             runtime,
             connectionId,
+            chunking: cfg.inbound?.reply?.chunking,
           });
 
           if (replyPayload.text) {
@@ -834,7 +901,7 @@ export async function monitorWebProvider(
           const fromDisplay =
             latest.chatType === "group"
               ? conversationId
-              : latest.from ?? "unknown";
+              : (latest.from ?? "unknown");
           if (isVerbose()) {
             console.log(
               success(
@@ -850,24 +917,26 @@ export async function monitorWebProvider(
           }
         } catch (err) {
           console.error(
-            danger(`Failed sending web auto-reply to ${latest.from ?? conversationId}: ${String(err)}`),
+            danger(
+              `Failed sending web auto-reply to ${latest.from ?? conversationId}: ${String(err)}`,
+            ),
           );
         }
       }
-      };
+    };
 
-      const enqueueBatch = async (msg: WebInboundMsg) => {
-        const key = msg.conversationId ?? msg.from;
-        const bucket = pendingBatches.get(key) ?? { messages: [] };
-        bucket.messages.push(msg);
-        pendingBatches.set(key, bucket);
-        if (getQueueSize() === 0) {
-          await processBatch(key);
-        } else {
-          bucket.timer =
-            bucket.timer ?? setTimeout(() => void processBatch(key), 150);
-        }
-      };
+    const enqueueBatch = async (msg: WebInboundMsg) => {
+      const key = msg.conversationId ?? msg.from;
+      const bucket = pendingBatches.get(key) ?? { messages: [] };
+      bucket.messages.push(msg);
+      pendingBatches.set(key, bucket);
+      if (getQueueSize() === 0) {
+        await processBatch(key);
+      } else {
+        bucket.timer =
+          bucket.timer ?? setTimeout(() => void processBatch(key), 150);
+      }
+    };
 
     const listener = await (listenerFactory ?? monitorWebInbox)({
       verbose,
@@ -1202,6 +1271,7 @@ export async function monitorWebProvider(
           replyLogger,
           runtime,
           connectionId,
+          chunking: cfg.inbound?.reply?.chunking,
         });
 
         const durationMs = Date.now() - tickStart;

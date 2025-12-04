@@ -358,7 +358,13 @@ export async function getReplyFromConfig(
       await saveSessionStore(storePath, sessionStore);
     }
     // If verbose directive is also present, persist it too.
-    if (hasVerboseDirective && inlineVerbose && sessionEntry && sessionStore && sessionKey) {
+    if (
+      hasVerboseDirective &&
+      inlineVerbose &&
+      sessionEntry &&
+      sessionStore &&
+      sessionKey
+    ) {
       if (inlineVerbose === "off") {
         delete sessionEntry.verboseLevel;
       } else {
@@ -431,9 +437,7 @@ export async function getReplyFromConfig(
   const to = (ctx.To ?? "").replace(/^whatsapp:/, "");
   const isSamePhone = from && to && from === to;
   const abortKey = sessionKey ?? (from || undefined) ?? (to || undefined);
-  const rawBodyNormalized = (
-    sessionCtx.BodyStripped ?? sessionCtx.Body ?? ""
-  )
+  const rawBodyNormalized = (sessionCtx.BodyStripped ?? sessionCtx.Body ?? "")
     .trim()
     .toLowerCase();
 

@@ -25,6 +25,12 @@ export type SessionConfig = {
   heartbeatMinutes?: number;
 };
 
+export type ChunkingConfig = {
+  enabled?: boolean; // Enable chunking (default: false)
+  delimiter?: string; // Delimiter to split on (default: "---")
+  delayMs?: number; // Delay between chunks in ms (default: 750)
+};
+
 export type LoggingConfig = {
   level?: "silent" | "fatal" | "error" | "warn" | "info" | "debug" | "trace";
   file?: string;
@@ -83,6 +89,7 @@ export type WarelayConfig = {
         format?: "text" | "json";
         identityPrefix?: string;
       };
+      chunking?: ChunkingConfig; // optional chunking for long responses
     };
   };
   web?: WebConfig;
@@ -142,6 +149,13 @@ const ReplySchema = z
         ]),
         format: z.union([z.literal("text"), z.literal("json")]).optional(),
         identityPrefix: z.string().optional(),
+      })
+      .optional(),
+    chunking: z
+      .object({
+        enabled: z.boolean().optional(),
+        delimiter: z.string().optional(),
+        delayMs: z.number().int().nonnegative().optional(),
       })
       .optional(),
   })

@@ -58,7 +58,12 @@ class TauRpcClient {
         const out = this.buffer.join("\n");
         clearTimeout(pending.timer);
         // Treat process exit as completion with whatever output we captured.
-        pending.resolve({ stdout: out, stderr: this.stderr, code: code ?? 0, signal });
+        pending.resolve({
+          stdout: out,
+          stderr: this.stderr,
+          code: code ?? 0,
+          signal,
+        });
       }
       this.dispose();
     });

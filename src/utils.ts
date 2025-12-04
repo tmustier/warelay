@@ -71,3 +71,55 @@ export function sleep(ms: number) {
 }
 
 export const CONFIG_DIR = `${os.homedir()}/.warelay`;
+
+/**
+ * Split text into chunks at natural boundaries (sentences, then words).
+ * Creates readable message chunks that fit within the specified limit.
+ *
+ * @param text - The text to split into chunks
+ * @param maxChars - Maximum characters per chunk (default 400)
+ * @returns Array of text chunks, each <= maxChars
+ */
+export function splitIntoChunks(text: string, maxChars = 400): string[] {
+  if (!text?.trim()) return [];
+  const trimmed = text.trim();
+  if (trimmed.length <= maxChars) return [trimmed];
+
+  const chunks: string[] = [];
+  let remaining = trimmed;
+
+  while (remaining.length > 0) {
+    remaining = remaining.trim();
+    if (!remaining) break;
+
+    if (remaining.length <= maxChars) {
+      chunks.push(remaining);
+      break;
+    }
+
+    // Try to split at sentence boundary within maxChars
+    const searchText = remaining.slice(0, maxChars);
+    let splitIndex: number | null = null;
+
+    // Find last sentence boundary (., !, ?) followed by space or at end
+    for (let i = searchText.length - 1; i >= 0; i--) {
+      if (".!?".includes(searchText[i])) {
+        if (i === searchText.length - 1 || /\s/.test(searchText[i + 1])) {
+          splitIndex = i + 1;
+          break;
+        }
+      }
+    }
+
+    // Fall back to word boundary if no sentence boundary found
+    if (splitIndex === null) {
+      const lastSpace = searchText.lastIndexOf(" ");
+      splitIndex = lastSpace > 0 ? lastSpace : maxChars;
+    }
+
+    chunks.push(remaining.slice(0, splitIndex).trim());
+    remaining = remaining.slice(splitIndex);
+  }
+
+  return chunks.filter((c) => c.length > 0);
+}
