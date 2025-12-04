@@ -2,7 +2,7 @@ import { chunkText } from "../auto-reply/chunk.js";
 import { getReplyFromConfig } from "../auto-reply/reply.js";
 import type { ReplyPayload } from "../auto-reply/types.js";
 import { waitForever } from "../cli/wait.js";
-import { loadConfig } from "../config/config.js";
+import { loadConfig, type ChunkingConfig } from "../config/config.js";
 import {
   DEFAULT_IDLE_MINUTES,
   deriveSessionKey,
@@ -15,7 +15,7 @@ import { logInfo } from "../logger.js";
 import { getChildLogger } from "../logging.js";
 import { getQueueSize } from "../process/command-queue.js";
 import { defaultRuntime, type RuntimeEnv } from "../runtime.js";
-import { jidToE164, normalizeE164 } from "../utils.js";
+import { jidToE164, normalizeE164, sleep } from "../utils.js";
 import { monitorWebInbox } from "./inbound.js";
 import { sendViaIpc, startIpcServer, stopIpcServer } from "./ipc.js";
 import { loadWebMedia } from "./media.js";
@@ -444,6 +444,7 @@ async function deliverWebReply(params: {
   runtime: RuntimeEnv;
   connectionId?: string;
   skipLog?: boolean;
+  chunking?: ChunkingConfig;
 }) {
   const {
     replyResult,
@@ -453,9 +454,9 @@ async function deliverWebReply(params: {
     runtime,
     connectionId,
     skipLog,
+    chunking,
   } = params;
   const replyStarted = Date.now();
-  const textChunks = chunkText(replyResult.text || "", WEB_TEXT_LIMIT);
   const mediaList = replyResult.mediaUrls?.length
     ? replyResult.mediaUrls
     : replyResult.mediaUrl
@@ -463,7 +464,66 @@ async function deliverWebReply(params: {
       : [];
 
   // Text-only replies
-  if (mediaList.length === 0 && textChunks.length) {
+  if (mediaList.length === 0 && replyResult.text) {
+    // Check for delimiter-based chunking first (for natural conversation flow)
+    const chunkingEnabled = chunking?.enabled === true;
+    const delimiter = chunking?.delimiter ?? "---";
+
+    if (chunkingEnabled && replyResult.text.includes(delimiter)) {
+      // Delimiter-based chunking: split on delimiter with typing indicators
+      const chunks = replyResult.text
+        .split(delimiter)
+        .map((c) => c.trim())
+        .filter((c) => c.length > 0);
+
+      logVerbose(
+        `Delimiter chunking: splitting into ${chunks.length} chunks on "${delimiter}"`,
+      );
+
+      for (let i = 0; i < chunks.length; i++) {
+        if (i > 0) {
+          // Show typing indicator and wait before next chunk
+          // Delay scales with chunk length: base 500ms + ~20ms per char, capped at 3s
+          const chunkDelay = Math.min(500 + chunks[i].length * 20, 3000);
+          await msg.sendComposing();
+          await sleep(chunkDelay);
+        }
+        // Apply overflow chunking to each delimiter chunk if needed
+        const subChunks = chunkText(chunks[i], WEB_TEXT_LIMIT);
+        for (const subChunk of subChunks) {
+          await msg.reply(subChunk);
+        }
+        logVerbose(
+          `Sent chunk ${i + 1}/${chunks.length} (${chunks[i].length} chars)`,
+        );
+      }
+
+      if (!skipLog) {
+        logInfo(
+          `✅ Sent ${chunks.length} chunked replies to ${msg.from} (${(Date.now() - replyStarted).toFixed(0)}ms)`,
+          runtime,
+        );
+      }
+      replyLogger.info(
+        {
+          correlationId: msg.id ?? newConnectionId(),
+          connectionId: connectionId ?? null,
+          to: msg.from,
+          from: msg.to,
+          text: replyResult.text,
+          chunks: chunks.length,
+          mediaUrl: null,
+          mediaSizeBytes: null,
+          mediaKind: null,
+          durationMs: Date.now() - replyStarted,
+        },
+        "auto-reply sent (chunked text)",
+      );
+      return;
+    }
+
+    // Standard overflow chunking (no delimiter or chunking disabled)
+    const textChunks = chunkText(replyResult.text, WEB_TEXT_LIMIT);
     for (const chunk of textChunks) {
       await msg.reply(chunk);
     }
@@ -489,6 +549,8 @@ async function deliverWebReply(params: {
     );
     return;
   }
+
+  const textChunks = chunkText(replyResult.text || "", WEB_TEXT_LIMIT);
 
   const remainingText = [...textChunks];
 
@@ -817,6 +879,7 @@ export async function monitorWebProvider(
             replyLogger,
             runtime,
             connectionId,
+            chunking: cfg.inbound?.reply?.chunking,
           });
 
           if (replyPayload.text) {
@@ -1202,6 +1265,7 @@ export async function monitorWebProvider(
           replyLogger,
           runtime,
           connectionId,
+          chunking: cfg.inbound?.reply?.chunking,
         });
 
         const durationMs = Date.now() - tickStart;
