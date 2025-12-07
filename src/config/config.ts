@@ -59,6 +59,7 @@ export type WarelayConfig = {
   logging?: LoggingConfig;
   inbound?: {
     allowFrom?: string[]; // E.164 numbers allowed to trigger auto-reply (without whatsapp:)
+    markAsRead?: boolean; // Whether to mark incoming messages as read (default: true)
     messagePrefix?: string; // Prefix added to all inbound messages (default: "[warelay]" if no allowFrom, else "")
     responsePrefix?: string; // Prefix auto-added to all outbound replies (e.g., "🦞")
     timestampPrefix?: boolean | string; // true/false or IANA timezone string (default: true with UTC)
@@ -190,6 +191,7 @@ const WarelaySchema = z.object({
   inbound: z
     .object({
       allowFrom: z.array(z.string()).optional(),
+      markAsRead: z.boolean().optional(),
       messagePrefix: z.string().optional(),
       responsePrefix: z.string().optional(),
       timestampPrefix: z.union([z.boolean(), z.string()]).optional(),

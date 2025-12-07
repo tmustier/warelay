@@ -116,7 +116,9 @@ export async function monitorWebInbox(options: {
       // Ignore status/broadcast traffic; we only care about direct chats.
       if (remoteJid.endsWith("@status") || remoteJid.endsWith("@broadcast"))
         continue;
-      if (id) {
+      // Mark message as read unless disabled in config
+      const markAsRead = cfg.inbound?.markAsRead !== false;
+      if (id && markAsRead) {
         const participant = msg.key?.participant;
         try {
           await sock.readMessages([
