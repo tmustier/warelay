@@ -116,24 +116,6 @@ export async function monitorWebInbox(options: {
       // Ignore status/broadcast traffic; we only care about direct chats.
       if (remoteJid.endsWith("@status") || remoteJid.endsWith("@broadcast"))
         continue;
-      // Mark message as read unless disabled in config
-      const markAsRead = cfg.inbound?.markAsRead !== false;
-      if (id && markAsRead) {
-        const participant = msg.key?.participant;
-        try {
-          await sock.readMessages([
-            { remoteJid, id, participant, fromMe: false },
-          ]);
-          if (isVerbose()) {
-            const suffix = participant ? ` (participant ${participant})` : "";
-            logVerbose(
-              `Marked message ${id} as read for ${remoteJid}${suffix}`,
-            );
-          }
-        } catch (err) {
-          logVerbose(`Failed to mark message ${id} read: ${String(err)}`);
-        }
-      }
       const group = isJidGroup(remoteJid);
       const participantJid = msg.key?.participant ?? undefined;
       const senderE164 = participantJid ? jidToE164(participantJid) : null;
@@ -164,6 +146,24 @@ export async function monitorWebInbox(options: {
             `Blocked unauthorized sender ${candidate} (not in allowFrom list)`,
           );
           continue; // Skip processing entirely
+        }
+      }
+
+      // Mark message as read unless disabled in config
+      if (id && cfg.inbound?.markAsRead !== false) {
+        const participant = msg.key?.participant;
+        try {
+          await sock.readMessages([
+            { remoteJid, id, participant, fromMe: false },
+          ]);
+          if (isVerbose()) {
+            const suffix = participant ? ` (participant ${participant})` : "";
+            logVerbose(
+              `Marked message ${id} as read for ${remoteJid}${suffix}`,
+            );
+          }
+        } catch (err) {
+          logVerbose(`Failed to mark message ${id} read: ${String(err)}`);
         }
       }
 
